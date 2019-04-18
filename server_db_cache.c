@@ -1,5 +1,7 @@
 #include "server_db_cache.h"
 #include <stdio.h>
+#include <CContainers/PHashMap.h>
+#include <CContainers/Utils.h>
 
 typedef struct
 {
@@ -8,34 +10,67 @@ typedef struct
 } RecordSyncData;
 
 #define NO_WRITER -1
-#define DB_RECORDS_COUNT 1000
-
 char *chServerDatabase;
-RecordSyncData recordSyncData[DB_RECORDS_COUNT] = {0};
+PHashMapHandle phmSyncRegistry;
 HANDLE hRegistryMutex;
+
+static ulint Callback_HashKey (void *key)
+{
+    return (ulint) key;
+}
+
+static lint Callback_KeyCompare (void *first, void *second)
+{
+    return ((ulint) first) - ((ulint) second);
+}
 
 void InitServerDBCache (char *chServerDatabaseFileName)
 {
     chServerDatabase = chServerDatabaseFileName;
-    for (int index = 0; index < DB_RECORDS_COUNT; ++index)
-    {
-        recordSyncData[index].readersCount = 0;
-        recordSyncData[index].writer = NO_WRITER;
-    }
-
+    phmSyncRegistry = PHashMap_Create (100, 5, Callback_HashKey, Callback_KeyCompare);
     hRegistryMutex = CreateMutex (NULL, FALSE, NULL);
+}
+
+static void Callback_FreeRecordSyncData (void **value)
+{
+    free (*value);
+}
+
+void DestructServerDBCache ()
+{
+    PHashMap_Destruct (phmSyncRegistry, ContainerCallback_Free, Callback_FreeRecordSyncData);
+}
+
+static RecordSyncData *GetRecordSyncData (int id)
+{
+    ulint key = id;
+    if (PHashMap_ContainsKey (phmSyncRegistry, (void *) key))
+    {
+        return (RecordSyncData *) *PHashMap_GetValue (phmSyncRegistry, (void *) key);
+    }
+    else
+    {
+        RecordSyncData *data = malloc (sizeof (RecordSyncData));
+        data->readersCount = 0;
+        data->writer = NO_WRITER;
+
+        PHashMap_Insert (phmSyncRegistry, (void *) key, data);
+        return data;
+    }
 }
 
 BOOL RequestModifyRecord (int id)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[id].readersCount > 0 || recordSyncData[id].writer != NO_WRITER)
+    RecordSyncData *data = GetRecordSyncData (id);
+
+    if (data->readersCount > 0 || data->writer != NO_WRITER)
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
     }
 
-    recordSyncData[id].writer = GetCurrentThreadId ();
+    data->writer = GetCurrentThreadId ();
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
@@ -43,13 +78,15 @@ BOOL RequestModifyRecord (int id)
 BOOL TryProcessReadCommand (int id, TaxPayment *output)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[id].writer != NO_WRITER)
+    RecordSyncData *data = GetRecordSyncData (id);
+
+    if (data->writer != NO_WRITER)
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
     }
 
-    recordSyncData[id].readersCount++;
+    data->readersCount++;
     ReleaseMutex (hRegistryMutex);
 
     FILE *db = fopen (chServerDatabase, "rb");
@@ -58,7 +95,7 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
     fclose (db);
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    recordSyncData[id].readersCount--;
+    data->readersCount--;
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
@@ -66,7 +103,9 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 BOOL ProcessModifyCommand (TaxPayment *newValue)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[newValue->num].writer != GetCurrentThreadId ())
+    RecordSyncData *data = GetRecordSyncData (newValue->num);
+
+    if (data->writer != GetCurrentThreadId ())
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
@@ -80,7 +119,7 @@ BOOL ProcessModifyCommand (TaxPayment *newValue)
     fclose (db);
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    recordSyncData[newValue->num].writer = NO_WRITER;
+    data->writer = NO_WRITER;
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }

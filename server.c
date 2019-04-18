@@ -77,6 +77,7 @@ int _tmain (VOID)
     }
 
     CloseHandle (hConsoleMutex);
+    DestructServerDBCache ();
     return 0;
 }
 
