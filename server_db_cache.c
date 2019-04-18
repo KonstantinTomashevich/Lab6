@@ -9,6 +9,7 @@ typedef struct
     int id;
     unsigned int readersCount;
     DWORD writer;
+    TaxPayment *payment;
 } SyncRecord;
 
 #define NO_WRITER -1
@@ -39,9 +40,16 @@ void InitServerDBCache (char *chServerDatabaseFileName)
     unusedSyncRecords = 0;
 }
 
+static void Callback_FreeSyncRecord (void **value)
+{
+    SyncRecord *record = *(SyncRecord **) value;
+    free (record->payment);
+    free (record);
+}
+
 void DestructServerDBCache ()
 {
-    PHashMap_Destruct (phmSyncRegistry, ContainerCallback_NoAction, ContainerCallback_Free);
+    PHashMap_Destruct (phmSyncRegistry, ContainerCallback_NoAction, Callback_FreeSyncRecord);
     PDoubleLinkedList_Destruct (pdllSyncRecordsDateOrder, ContainerCallback_NoAction);
 }
 
@@ -59,13 +67,18 @@ static void SyncRecordEdition_TryFixSyncRecordsCount ()
         else
         {
             --unusedSyncRecords;
+            FILE *db = fopen (chServerDatabase, "rb+");
+            fseek (db, data->id * sizeof (TaxPayment), SEEK_SET);
+            fwrite (data->payment, sizeof (TaxPayment), 1, db);
+            fclose (db);
+
             iterator = PDoubleLinkedList_Erase (pdllSyncRecordsDateOrder, iterator);
             ulint key = data->id;
-            PHashMap_Erase (phmSyncRegistry, (void *) key, ContainerCallback_NoAction, ContainerCallback_Free);
+            PHashMap_Erase (phmSyncRegistry, (void *) key, ContainerCallback_NoAction, Callback_FreeSyncRecord);
         }
     }
 
-    printf ("%ld /u%d\n", PHashMap_Size (phmSyncRegistry), unusedSyncRecords);
+    printf ("Cache report. %ld elements in, %d unused.\n", PHashMap_Size (phmSyncRegistry), unusedSyncRecords);
 }
 
 static SyncRecord *SyncRecordEdition_GetRecordSyncData (int id)
@@ -83,6 +96,12 @@ static SyncRecord *SyncRecordEdition_GetRecordSyncData (int id)
         data->id = id;
         data->readersCount = 0;
         data->writer = NO_WRITER;
+
+        FILE *db = fopen (chServerDatabase, "rb");
+        fseek (db, id * sizeof (TaxPayment), SEEK_SET);
+        data->payment = malloc (sizeof (TaxPayment));
+        fread (data->payment, sizeof (TaxPayment), 1, db);
+        fclose (db);
 
         PHashMap_Insert (phmSyncRegistry, (void *) key, data);
         PDoubleLinkedList_Insert (pdllSyncRecordsDateOrder, PDoubleLinkedList_End (pdllSyncRecordsDateOrder), data);
@@ -126,11 +145,7 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 
     data->readersCount++;
     ReleaseMutex (hRegistryMutex);
-
-    FILE *db = fopen (chServerDatabase, "rb");
-    fseek (db, id * sizeof (TaxPayment), SEEK_SET);
-    fread (output, sizeof (TaxPayment), 1, db);
-    fclose (db);
+    memcpy (output, data->payment, sizeof (TaxPayment));
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
     data->readersCount--;
@@ -156,11 +171,7 @@ BOOL ProcessModifyCommand (TaxPayment *newValue)
     }
 
     ReleaseMutex (hRegistryMutex);
-
-    FILE *db = fopen (chServerDatabase, "rb+");
-    fseek (db, newValue->num * sizeof (TaxPayment), SEEK_SET);
-    fwrite (newValue, sizeof (TaxPayment), 1, db);
-    fclose (db);
+    memcpy (data->payment, newValue, sizeof (TaxPayment));
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
     data->writer = NO_WRITER;
