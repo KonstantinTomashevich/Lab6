@@ -1,17 +1,23 @@
 #include "server_db_cache.h"
 #include <stdio.h>
 #include <CContainers/PHashMap.h>
+#include <CContainers/PDoubleLinkedList.h>
 #include <CContainers/Utils.h>
 
 typedef struct
 {
+    int id;
     unsigned int readersCount;
     DWORD writer;
-} RecordSyncData;
+} SyncRecord;
 
 #define NO_WRITER -1
+#define MAX_SYNC_RECORDS 100
+
+int unusedSyncRecords;
 char *chServerDatabase;
 PHashMapHandle phmSyncRegistry;
+PDoubleLinkedListHandle pdllSyncRecordsDateOrder;
 HANDLE hRegistryMutex;
 
 static ulint Callback_HashKey (void *key)
@@ -28,33 +34,59 @@ void InitServerDBCache (char *chServerDatabaseFileName)
 {
     chServerDatabase = chServerDatabaseFileName;
     phmSyncRegistry = PHashMap_Create (100, 5, Callback_HashKey, Callback_KeyCompare);
+    pdllSyncRecordsDateOrder = PDoubleLinkedList_Create ();
     hRegistryMutex = CreateMutex (NULL, FALSE, NULL);
-}
-
-static void Callback_FreeRecordSyncData (void **value)
-{
-    free (*value);
+    unusedSyncRecords = 0;
 }
 
 void DestructServerDBCache ()
 {
-    PHashMap_Destruct (phmSyncRegistry, ContainerCallback_Free, Callback_FreeRecordSyncData);
+    PHashMap_Destruct (phmSyncRegistry, ContainerCallback_NoAction, ContainerCallback_Free);
+    PDoubleLinkedList_Destruct (pdllSyncRecordsDateOrder, ContainerCallback_NoAction);
 }
 
-static RecordSyncData *GetRecordSyncData (int id)
+static void SyncRecordEdition_TryFixSyncRecordsCount ()
+{
+    PDoubleLinkedListIterator iterator = PDoubleLinkedList_Begin (pdllSyncRecordsDateOrder);
+    while (PHashMap_Size (phmSyncRegistry) >= MAX_SYNC_RECORDS && unusedSyncRecords != 0 &&
+        iterator != PDoubleLinkedList_End (pdllSyncRecordsDateOrder))
+    {
+        SyncRecord *data = *(SyncRecord **) PDoubleLinkedListIterator_ValueAt (iterator);
+        if (data->readersCount > 0 || data->writer != NO_WRITER)
+        {
+            iterator = PDoubleLinkedListIterator_Next (iterator);
+        }
+        else
+        {
+            --unusedSyncRecords;
+            iterator = PDoubleLinkedList_Erase (pdllSyncRecordsDateOrder, iterator);
+            ulint key = data->id;
+            PHashMap_Erase (phmSyncRegistry, (void *) key, ContainerCallback_NoAction, ContainerCallback_Free);
+        }
+    }
+
+    printf ("%ld /u%d\n", PHashMap_Size (phmSyncRegistry), unusedSyncRecords);
+}
+
+static SyncRecord *SyncRecordEdition_GetRecordSyncData (int id)
 {
     ulint key = id;
     if (PHashMap_ContainsKey (phmSyncRegistry, (void *) key))
     {
-        return (RecordSyncData *) *PHashMap_GetValue (phmSyncRegistry, (void *) key);
+        return (SyncRecord *) *PHashMap_GetValue (phmSyncRegistry, (void *) key);
     }
     else
     {
-        RecordSyncData *data = malloc (sizeof (RecordSyncData));
+        SyncRecordEdition_TryFixSyncRecordsCount ();
+        SyncRecord *data = malloc (sizeof (SyncRecord));
+
+        data->id = id;
         data->readersCount = 0;
         data->writer = NO_WRITER;
 
         PHashMap_Insert (phmSyncRegistry, (void *) key, data);
+        PDoubleLinkedList_Insert (pdllSyncRecordsDateOrder, PDoubleLinkedList_End (pdllSyncRecordsDateOrder), data);
+        ++unusedSyncRecords;
         return data;
     }
 }
@@ -62,7 +94,7 @@ static RecordSyncData *GetRecordSyncData (int id)
 BOOL RequestModifyRecord (int id)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    RecordSyncData *data = GetRecordSyncData (id);
+    SyncRecord *data = SyncRecordEdition_GetRecordSyncData (id);
 
     if (data->readersCount > 0 || data->writer != NO_WRITER)
     {
@@ -71,6 +103,7 @@ BOOL RequestModifyRecord (int id)
     }
 
     data->writer = GetCurrentThreadId ();
+    --unusedSyncRecords;
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
@@ -78,12 +111,17 @@ BOOL RequestModifyRecord (int id)
 BOOL TryProcessReadCommand (int id, TaxPayment *output)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    RecordSyncData *data = GetRecordSyncData (id);
+    SyncRecord *data = SyncRecordEdition_GetRecordSyncData (id);
 
     if (data->writer != NO_WRITER)
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
+    }
+
+    if (data->readersCount == 0)
+    {
+        --unusedSyncRecords;
     }
 
     data->readersCount++;
@@ -96,6 +134,12 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
     data->readersCount--;
+
+    if (data->readersCount == 0)
+    {
+        ++unusedSyncRecords;
+    }
+
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
@@ -103,7 +147,7 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 BOOL ProcessModifyCommand (TaxPayment *newValue)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    RecordSyncData *data = GetRecordSyncData (newValue->num);
+    SyncRecord *data = SyncRecordEdition_GetRecordSyncData (newValue->num);
 
     if (data->writer != GetCurrentThreadId ())
     {
@@ -120,6 +164,7 @@ BOOL ProcessModifyCommand (TaxPayment *newValue)
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
     data->writer = NO_WRITER;
+    ++unusedSyncRecords;
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
