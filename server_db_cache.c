@@ -4,41 +4,38 @@
 typedef struct
 {
     unsigned int readersCount;
-    DWORD writter;
+    DWORD writer;
 } RecordSyncData;
 
-#define NO_WRITTER -1
+#define NO_WRITER -1
+#define DB_RECORDS_COUNT 1000
 
 char *chServerDatabase;
-RecordSyncData recordSyncData[1000] = {0};
-TaxPayment payments[1000] = {0};
+RecordSyncData recordSyncData[DB_RECORDS_COUNT] = {0};
 HANDLE hRegistryMutex;
 
 void InitServerDBCache (char *chServerDatabaseFileName)
 {
     chServerDatabase = chServerDatabaseFileName;
-    FILE *dbFile = fopen (chServerDatabaseFileName, "rb");
-    for (int index = 0; index < 1000; ++index)
+    for (int index = 0; index < DB_RECORDS_COUNT; ++index)
     {
-        fread (payments + index, sizeof (TaxPayment), 1, dbFile);
         recordSyncData[index].readersCount = 0;
-        recordSyncData[index].writter = NO_WRITTER;
+        recordSyncData[index].writer = NO_WRITER;
     }
 
-    fclose (dbFile);
     hRegistryMutex = CreateMutex (NULL, FALSE, NULL);
 }
 
 BOOL RequestModifyRecord (int id)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[id].readersCount > 0 || recordSyncData[id].writter != NO_WRITTER)
+    if (recordSyncData[id].readersCount > 0 || recordSyncData[id].writer != NO_WRITER)
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
     }
 
-    recordSyncData[id].writter = GetCurrentThreadId ();
+    recordSyncData[id].writer = GetCurrentThreadId ();
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
@@ -46,7 +43,7 @@ BOOL RequestModifyRecord (int id)
 BOOL TryProcessReadCommand (int id, TaxPayment *output)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[id].writter != NO_WRITTER)
+    if (recordSyncData[id].writer != NO_WRITER)
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
@@ -55,7 +52,11 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
     recordSyncData[id].readersCount++;
     ReleaseMutex (hRegistryMutex);
 
-    memcpy (output, payments + id, sizeof (TaxPayment));
+    FILE *db = fopen (chServerDatabase, "rb");
+    fseek (db, id * sizeof (TaxPayment), SEEK_SET);
+    fread (output, sizeof (TaxPayment), 1, db);
+    fclose (db);
+
     WaitForSingleObject (hRegistryMutex, INFINITE);
     recordSyncData[id].readersCount--;
     ReleaseMutex (hRegistryMutex);
@@ -65,17 +66,21 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 BOOL ProcessModifyCommand (TaxPayment *newValue)
 {
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    if (recordSyncData[newValue->num].writter != GetCurrentThreadId ())
+    if (recordSyncData[newValue->num].writer != GetCurrentThreadId ())
     {
         ReleaseMutex (hRegistryMutex);
         return FALSE;
     }
 
     ReleaseMutex (hRegistryMutex);
-    memcpy (payments + newValue->num, newValue, sizeof (TaxPayment));
+
+    FILE *db = fopen (chServerDatabase, "rb+");
+    fseek (db, newValue->num * sizeof (TaxPayment), SEEK_SET);
+    fwrite (newValue, sizeof (TaxPayment), 1, db);
+    fclose (db);
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
-    recordSyncData[newValue->num].writter = NO_WRITTER;
+    recordSyncData[newValue->num].writer = NO_WRITER;
     ReleaseMutex (hRegistryMutex);
     return TRUE;
 }
