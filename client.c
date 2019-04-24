@@ -26,10 +26,14 @@ int _tmain (int argc, char *argv[])
 
 static HANDLE ConnectToServer ()
 {
-    LPTSTR lpszPipename = "\\\\.\\pipe\\OSLab6ServerNamedPipe";
+    char pipeName [100];
+    printf ("Input address prefix (like \\\\ip): ");
+    scanf ("%s", pipeName);
+    strcat (pipeName, "\\pipe\\OSLab6ServerNamedPipe");
+    
     while (1)
     {
-        HANDLE hPipe = CreateFile (lpszPipename, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        HANDLE hPipe = CreateFile (pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE)
         {
             return hPipe;
@@ -42,7 +46,7 @@ static HANDLE ConnectToServer ()
         }
 
 
-        if (!WaitNamedPipe (lpszPipename, 20000))
+        if (!WaitNamedPipe (pipeName, 20000))
         {
             printf ("Could not open pipe: 20 second wait timed out.");
             return INVALID_HANDLE_VALUE;
