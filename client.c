@@ -30,10 +30,11 @@ static HANDLE ConnectToServer ()
     printf ("Input address prefix (like \\\\ip): ");
     scanf ("%s", pipeName);
     strcat (pipeName, "\\pipe\\OSLab6ServerNamedPipe");
-    
+
     while (1)
     {
-        HANDLE hPipe = CreateFile (pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        //HANDLE hPipe = OpenFile (pipeName, ..., OF_READWRITE);
+        HANDLE hPipe = CreateFile (pipeName, PIPE_ACCESS_DUPLEX, 0, NULL, OPEN_EXISTING, 0, NULL);
         if (hPipe != INVALID_HANDLE_VALUE)
         {
             return hPipe;

@@ -39,7 +39,8 @@ int _tmain (VOID)
         ReleaseMutex (hConsoleMutex);
 
         hPipe = CreateNamedPipe (lpszPipename, PIPE_ACCESS_DUPLEX,
-                                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                                 (PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_ACCEPT_REMOTE_CLIENTS) &
+                                 ~PIPE_REJECT_REMOTE_CLIENTS,
                                  PIPE_UNLIMITED_INSTANCES, BUFFER_SIZE, BUFFER_SIZE, 0, NULL);
 
         if (hPipe == INVALID_HANDLE_VALUE)

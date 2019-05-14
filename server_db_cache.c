@@ -145,7 +145,9 @@ BOOL TryProcessReadCommand (int id, TaxPayment *output)
 
     data->readersCount++;
     ReleaseMutex (hRegistryMutex);
+
     memcpy (output, data->payment, sizeof (TaxPayment));
+    Sleep (10000);
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
     data->readersCount--;
@@ -171,6 +173,7 @@ BOOL ProcessModifyCommand (TaxPayment *newValue)
     }
 
     ReleaseMutex (hRegistryMutex);
+
     memcpy (data->payment, newValue, sizeof (TaxPayment));
 
     WaitForSingleObject (hRegistryMutex, INFINITE);
